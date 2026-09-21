@@ -33,10 +33,14 @@
         .cart-selected { border-color:#10b981 !important; background: #ecfdf5 !important; }
         .saving-overlay { position: fixed; top: 1rem; right: 1rem; background: #10b981; color: white; padding: 0.75rem 1.25rem; border-radius: 1rem; font-weight: 700; box-shadow: 0 10px 25px rgba(0,0,0,0.15); z-index: 200; animation: slideIn .2s ease; }
         @keyframes slideIn { from { transform: translateX(100px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-        .variant-btn { transition: all 0.15s ease; cursor: pointer; border: 2px solid #e5e7eb; border-radius: 12px; padding: 6px 16px; font-size: 14px; font-weight: 500; background: white; }
+        .variant-btn { transition: all 0.15s ease; cursor: pointer; border: 2px solid #e5e7eb; border-radius: 12px; padding: 6px 16px; font-size: 14px; font-weight: 500; background: white; display: inline-flex; flex-direction: column; align-items: center; line-height: 1.2; }
         .variant-btn:hover { border-color: #a855f7; }
         .variant-btn.selected { border-color: #7c3aed; background: #f3e8ff; color: #6b21a8; font-weight: 700; box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.3); }
+        .variant-btn .variant-price { font-size: 10px; color: #7c3aed; font-weight: 600; }
+        .variant-btn.selected .variant-price { color: #6b21a8; }
         .variant-btn.disabled { opacity: 0.4; cursor: not-allowed; text-decoration: line-through; }
+        .price-updated { animation: priceFlash 0.4s ease; }
+        @keyframes priceFlash { 0% { transform: scale(1); } 50% { transform: scale(1.1); color: #10b981; } 100% { transform: scale(1); } }
     </style>
 </head>
 <body class="bg-slate-100 text-slate-800 min-h-screen flex flex-col">
@@ -59,6 +63,17 @@
 
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
+
+        // ============ QURILMA UCHUN DOIMIY 6 XONALI PAROL ============
+        function getDevicePassword() {
+            let pwd = localStorage.getItem('device_scan_password');
+            if (!pwd || pwd.length !== 6 || !/^\d{6}$/.test(pwd)) {
+                pwd = Math.floor(100000 + Math.random() * 900000).toString();
+                localStorage.setItem('device_scan_password', pwd);
+            }
+            return pwd;
+        }
+        const DEVICE_PASSWORD = getDevicePassword();
 
         function playBeep(times = 3, freq = 1200, dur = 100, gap = 80) {
             try {
@@ -105,6 +120,48 @@
 
         function markAsRead(itemId) {
             if (!readItems.includes(itemId)) { readItems.push(itemId); localStorage.setItem('app_read_items', JSON.stringify(readItems)); updateBadges(); }
+        }
+
+        // ============ XUSUSIYAT PARSER ============
+        function parseVariantlar(variantlarStr) {
+            if (!variantlarStr) return [];
+            return variantlarStr.split(',').map(v => {
+                const trimmed = v.trim();
+                if (!trimmed) return null;
+                const parts = trimmed.split(':');
+                if (parts.length >= 2) {
+                    return { nomi: parts[0].trim(), narx: parseInt(parts[1].trim()) || 0 };
+                }
+                return { nomi: trimmed, narx: 0 };
+            }).filter(Boolean);
+        }
+
+        function formatVariantlarForDisplay(variantlar) {
+            return variantlar.map(v => v.narx > 0 ? `${v.nomi}:${v.narx}` : v.nomi).join(', ');
+        }
+
+        function getVariantNarx(mahsulot, tanlanganVariantlar, xususiyatIdx, variantNomi) {
+            if (!mahsulot.xususiyatlar || !mahsulot.xususiyatlar[xususiyatIdx]) return 0;
+            const x = mahsulot.xususiyatlar[xususiyatIdx];
+            const parsed = parseVariantlar(x.variantlar);
+            const found = parsed.find(v => v.nomi === variantNomi);
+            return found ? found.narx : 0;
+        }
+
+        function calculateMahsulotNarx(mahsulot, tanlanganVariantlar) {
+            let baseNarx = parseInt(mahsulot.narx) || 0;
+            if (!mahsulot.xususiyatlar || !mahsulot.xususiyatlar.length) return baseNarx;
+            let jami = baseNarx;
+            mahsulot.xususiyatlar.forEach((x, xi) => {
+                const variantNomi = tanlanganVariantlar[xi];
+                if (!variantNomi) return;
+                const parsed = parseVariantlar(x.variantlar);
+                const found = parsed.find(v => v.nomi === variantNomi);
+                if (found && found.narx > 0) {
+                    jami = found.narx;
+                }
+            });
+            return jami;
         }
 
         // ============ TEZKOR RASM SIQISH ============
@@ -413,7 +470,6 @@
             const user = await getCurrentUser(); if (!user) return;
             if (tab.startsWith('admin_') && user.role !== 'admin') return;
             
-            // Brauzer sarlavhasini o'zgartirish
             const bs = await getBolimSozlamalari();
             let title = 'MyForumm';
             if (tab.startsWith('admin_')) {
@@ -572,19 +628,18 @@
                     else stockHtml = `<span class="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-bold">${soni} dona</span>`;
                     const btnDisabled = tugadi ? 'disabled opacity-50 cursor-not-allowed' : '';
                     const imgsCount = imgs.length > 1 ? `<span class="absolute top-2 right-2 bg-black/60 text-white text-[10px] px-2 py-0.5 rounded-full"><i class="fa-regular fa-images mr-1"></i>${imgs.length}</span>` : '';
-                    // Dinamik xususiyatlar
                     let xususiyatlarHtml = '';
                     if (m.xususiyatlar && m.xususiyatlar.length) {
                         xususiyatlarHtml = m.xususiyatlar.map((x, xi) => {
-                            const variantlar = x.variantlar ? x.variantlar.split(',').map(v => v.trim()).filter(Boolean) : [];
-                            if (!variantlar.length) return '';
-                            const uniqueId = `xus_${mId}_${xi}`;
-                            const btns = variantlar.map((v, vi) => `<button type="button" class="variant-btn ${vi === 0 ? 'selected' : ''} vari-btn" data-xus-idx="${xi}" data-variant="${v}" data-mahsulot-id="${mId}" onclick="selectVariant(this)">${v}</button>`).join('');
+                            const parsed = parseVariantlar(x.variantlar);
+                            if (!parsed.length) return '';
+                            const btns = parsed.map((v, vi) => {
+                                const narxText = v.narx > 0 ? `<span class="variant-price">${v.narx.toLocaleString()} so'm</span>` : '';
+                                return `<button type="button" class="variant-btn ${vi === 0 ? 'selected' : ''} vari-btn" data-xus-idx="${xi}" data-variant="${v.nomi}" data-narx="${v.narx}" data-mahsulot-id="${mId}" onclick="selectVariant(this)">${v.nomi}${narxText}</button>`;
+                            }).join('');
                             return `<div class="mt-2"><span class="text-xs font-bold text-gray-500">${x.nomi}:</span><div class="flex flex-wrap gap-1.5 mt-1">${btns}</div></div>`;
                         }).join('');
                     }
-                    // Tanlov soni (checkbox lar uchun) - buni mahsulot ichida dinamik qilish qiyin, hozircha birinchi variantni tanlash yo'li bilan
-                    const selectedCount = 0; // vaqtincha
                     cards += `
                         <div class="product-card relative border border-gray-100 rounded-3xl p-4 bg-white shadow-sm space-y-3">
                             ${chegirma}${imgsCount}
@@ -599,7 +654,10 @@
                             </div>
                             ${xususiyatlarHtml}
                             <div class="flex items-end justify-between gap-2 mt-2">
-                                <div><div class="text-lg font-extrabold text-purple-700">${m.narx || '0'} so'm</div>${eskiNarx}</div>
+                                <div>
+                                    <div class="text-lg font-extrabold text-purple-700" id="narx_display_${mId}">${m.narx || '0'} so'm</div>
+                                    ${eskiNarx}
+                                </div>
                                 <div class="flex gap-1">
                                     <button onclick="event.stopPropagation();addToCart('${mId}')" ${btnDisabled} class="bg-gradient-to-r from-amber-500 to-orange-500 text-white px-3 py-2 rounded-2xl text-xs font-bold shadow hover:shadow-lg ${btnDisabled}"><i class="fa-solid fa-cart-plus"></i></button>
                                     <button onclick="event.stopPropagation();openBuyurtmaModal('${mId}')" ${btnDisabled} class="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-3 py-2 rounded-2xl text-xs font-bold shadow hover:shadow-lg ${btnDisabled}"><i class="fa-solid fa-bolt"></i> Buyurtma</button>
@@ -611,23 +669,49 @@
                 }
                 if (!found) cards = `<div class="col-span-full text-center py-10 text-gray-400">Mahsulotlar topilmadi</div>`;
                 grid.innerHTML = cards;
+                if (!window._selectedVariants) window._selectedVariants = {};
+                for (let mId in mahsulotlar) {
+                    const m = mahsulotlar[mId];
+                    if (!m.xususiyatlar || !m.xususiyatlar.length) continue;
+                    if (!window._selectedVariants[mId]) window._selectedVariants[mId] = {};
+                    m.xususiyatlar.forEach((x, xi) => {
+                        if (window._selectedVariants[mId][xi]) return;
+                        const parsed = parseVariantlar(x.variantlar);
+                        if (parsed.length) window._selectedVariants[mId][xi] = parsed[0].nomi;
+                    });
+                }
             }
             draw();
             document.getElementById('uzumSearch').addEventListener('input', (e) => draw(e.target.value.trim()));
         }
 
-        // Variant tanlash
         window.selectVariant = function(el) {
             const mId = el.dataset.mahsulotId;
             const xusIdx = el.dataset.xusIdx;
+            const variantNomi = el.dataset.variant;
             const parent = el.parentElement;
             parent.querySelectorAll('.variant-btn').forEach(b => b.classList.remove('selected'));
             el.classList.add('selected');
-            // Store in temp object for this product session
             if (!window._selectedVariants) window._selectedVariants = {};
             if (!window._selectedVariants[mId]) window._selectedVariants[mId] = {};
-            window._selectedVariants[mId][xusIdx] = el.dataset.variant;
+            window._selectedVariants[mId][xusIdx] = variantNomi;
+            updateMahsulotNarxDisplay(mId);
         };
+
+        async function updateMahsulotNarxDisplay(mId) {
+            const mahsulotlar = await getMahsulotlarCached();
+            const m = mahsulotlar[mId];
+            if (!m) return;
+            const selectedVars = window._selectedVariants?.[mId] || {};
+            const yangiNarx = calculateMahsulotNarx(m, selectedVars);
+            const el = document.getElementById(`narx_display_${mId}`);
+            if (el) {
+                el.textContent = yangiNarx.toLocaleString() + " so'm";
+                el.classList.remove('price-updated');
+                void el.offsetWidth;
+                el.classList.add('price-updated');
+            }
+        }
 
         window.openProductFullScreen = async function(mId) {
             const mahsulotlar = await getMahsulotlarCached(true);
@@ -648,6 +732,24 @@
             }
             if (fCount === 0) fikrlarHtml = '<p class="text-xs text-gray-400 text-center">Hozircha fikrlar yo\'q</p>';
 
+            const selectedVars = window._selectedVariants?.[mId] || {};
+            let currentNarx = calculateMahsulotNarx(m, selectedVars);
+
+            let xususiyatlarHtml = '';
+            if (m.xususiyatlar && m.xususiyatlar.length) {
+                xususiyatlarHtml = m.xususiyatlar.map((x, xi) => {
+                    const parsed = parseVariantlar(x.variantlar);
+                    if (!parsed.length) return '';
+                    const selected = selectedVars[xi];
+                    const btns = parsed.map((v) => {
+                        const isSel = selected === v.nomi;
+                        const narxText = v.narx > 0 ? `<span class="variant-price">${v.narx.toLocaleString()} so'm</span>` : '';
+                        return `<button type="button" class="variant-btn full-variant-btn ${isSel ? 'selected' : ''}" data-xus-idx="${xi}" data-variant="${v.nomi}" data-narx="${v.narx}" data-mahsulot-id="${mId}" onclick="selectFullVariant(this)">${v.nomi}${narxText}</button>`;
+                    }).join('');
+                    return `<div class="mt-2"><span class="text-xs font-bold text-gray-500">${x.nomi}:</span><div class="flex flex-wrap gap-1.5 mt-1">${btns}</div></div>`;
+                }).join('');
+            }
+
             const modal = document.getElementById('modalContainer');
             modal.innerHTML = `
                 <div class="fixed inset-0 bg-black/90 backdrop-blur-sm z-[100] flex items-center justify-center p-4 overflow-y-auto modal-overlay" onclick="if(event.target===this)closeModal()">
@@ -665,19 +767,11 @@
                                 <h2 class="text-2xl font-bold text-gray-800">${m.nomi}</h2>
                                 <p class="text-sm text-gray-600 whitespace-pre-wrap">${m.tavsif || 'Tavsif mavjud emas'}</p>
                                 <div class="flex items-center gap-3">
-                                    <span class="text-2xl font-extrabold text-purple-700">${m.narx || '0'} so'm</span>
+                                    <span class="text-2xl font-extrabold text-purple-700" id="fullNarxDisplay">${currentNarx.toLocaleString()} so'm</span>
                                     ${m.eskiNarx ? `<span class="text-sm text-gray-400 line-through">${m.eskiNarx} so'm</span>` : ''}
                                     ${m.chegirma ? `<span class="bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">-${m.chegirma}%</span>` : ''}
                                 </div>
-                                <!-- Xususiyatlar -->
-                                <div id="fullXususiyatlar">
-                                    ${(m.xususiyatlar || []).map((x, xi) => {
-                                        const variantlar = x.variantlar ? x.variantlar.split(',').map(v => v.trim()).filter(Boolean) : [];
-                                        if (!variantlar.length) return '';
-                                        const btns = variantlar.map((v, vi) => `<button type="button" class="variant-btn full-variant-btn ${vi === 0 ? 'selected' : ''}" data-xus-idx="${xi}" data-variant="${v}" data-mahsulot-id="${mId}" onclick="selectFullVariant(this)">${v}</button>`).join('');
-                                        return `<div class="mt-2"><span class="text-xs font-bold text-gray-500">${x.nomi}:</span><div class="flex flex-wrap gap-1.5 mt-1">${btns}</div></div>`;
-                                    }).join('')}
-                                </div>
+                                <div id="fullXususiyatlar">${xususiyatlarHtml}</div>
                                 <div class="flex gap-2 pt-2">
                                     <button onclick="addToCart('${mId}')" class="flex-1 bg-amber-500 text-white py-2.5 rounded-2xl font-bold shadow hover:shadow-lg"><i class="fa-solid fa-cart-plus mr-1"></i> Savatga</button>
                                     <button onclick="openBuyurtmaModal('${mId}')" class="flex-1 bg-gradient-to-r from-purple-600 to-pink-600 text-white py-2.5 rounded-2xl font-bold shadow hover:shadow-lg"><i class="fa-solid fa-bolt mr-1"></i> Buyurtma</button>
@@ -701,25 +795,36 @@
                     </div>
                 </div>
             `;
-            // Select first variant for full view
-            if (m.xususiyatlar && m.xususiyatlar.length) {
-                window._fullSelectedVariants = {};
-                m.xususiyatlar.forEach((x, xi) => {
-                    const variantlar = x.variantlar ? x.variantlar.split(',').map(v => v.trim()).filter(Boolean) : [];
-                    if (variantlar.length) window._fullSelectedVariants[xi] = variantlar[0];
-                });
-            }
         };
 
         window.selectFullVariant = function(el) {
             const mId = el.dataset.mahsulotId;
             const xusIdx = el.dataset.xusIdx;
+            const variantNomi = el.dataset.variant;
             const parent = el.parentElement;
             parent.querySelectorAll('.variant-btn').forEach(b => b.classList.remove('selected'));
             el.classList.add('selected');
-            if (!window._fullSelectedVariants) window._fullSelectedVariants = {};
-            window._fullSelectedVariants[xusIdx] = el.dataset.variant;
+            if (!window._selectedVariants) window._selectedVariants = {};
+            if (!window._selectedVariants[mId]) window._selectedVariants[mId] = {};
+            window._selectedVariants[mId][xusIdx] = variantNomi;
+            updateFullViewNarx(mId);
+            updateMahsulotNarxDisplay(mId);
         };
+
+        async function updateFullViewNarx(mId) {
+            const mahsulotlar = await getMahsulotlarCached();
+            const m = mahsulotlar[mId];
+            if (!m) return;
+            const selectedVars = window._selectedVariants?.[mId] || {};
+            const yangiNarx = calculateMahsulotNarx(m, selectedVars);
+            const el = document.getElementById('fullNarxDisplay');
+            if (el) {
+                el.textContent = yangiNarx.toLocaleString() + " so'm";
+                el.classList.remove('price-updated');
+                void el.offsetWidth;
+                el.classList.add('price-updated');
+            }
+        }
 
         window.submitFikr = async function(mId) {
             const user = await getCurrentUser(); if (!user) { alert("Tizimga kiring!"); return; }
@@ -757,15 +862,9 @@
             if (soni <= 0) { alert("Mahsulot tugagan!"); return; }
             const cur = parseInt(savat[mId]?.soni) || 0;
             if (cur + 1 > soni) { alert("Omborda yetarli emas!"); return; }
-            // Collect selected variants
-            let selectedVars = {};
-            if (window._fullSelectedVariants) {
-                selectedVars = { ...window._fullSelectedVariants };
-            } else if (window._selectedVariants && window._selectedVariants[mId]) {
-                selectedVars = { ...window._selectedVariants[mId] };
-            }
-            // Map variant names to xususiyat names
+            const selectedVars = window._selectedVariants?.[mId] || {};
             let variantText = '';
+            let finalNarx = calculateMahsulotNarx(m, selectedVars);
             if (m.xususiyatlar && m.xususiyatlar.length) {
                 const parts = m.xususiyatlar.map((x, xi) => {
                     const val = selectedVars[xi];
@@ -773,17 +872,30 @@
                 }).filter(Boolean);
                 variantText = parts.join(', ');
             }
-            savat[mId] = { soni: cur + 1, nomi: m.nomi, narx: parseInt(m.narx) || 0, turi: m.turi || 'oddiy', variantlar: variantText };
-            savatSelected[mId] = true;
+            const key = mId + (variantText ? '_' + variantText : '');
+            savat[key] = { 
+                soni: cur + 1, 
+                nomi: m.nomi, 
+                narx: finalNarx, 
+                asosiyNarx: parseInt(m.narx) || 0,
+                mahsulotId: mId,
+                turi: m.turi || 'oddiy', 
+                variantlar: variantText,
+                tanlanganVariantlar: JSON.parse(JSON.stringify(selectedVars))
+            };
+            savatSelected[key] = true;
             saveSavat(); saveSavatSelected();
-            alert(`Savatga qo'shildi: ${m.nomi}${variantText ? ' (' + variantText + ')' : ''}`);
+            alert(`Savatga qo'shildi: ${m.nomi}${variantText ? ' (' + variantText + ')' : ''}\nNarx: ${finalNarx.toLocaleString()} so'm`);
         };
 
         // ============= SAVAT =============
         async function renderSavat(container) {
             const user = await getCurrentUser(); if (!user) return;
             const mahsulotlar = await getMahsulotlarCached(true);
-            for (let k in savat) { if (!mahsulotlar[k]) { delete savat[k]; delete savatSelected[k]; } }
+            for (let k in savat) { 
+                const mId = savat[k].mahsulotId || k.split('_')[0];
+                if (!mahsulotlar[mId]) { delete savat[k]; delete savatSelected[k]; } 
+            }
             for (let k in savatSelected) { if (!savat[k]) delete savatSelected[k]; }
             saveSavat(); saveSavatSelected();
 
@@ -810,11 +922,13 @@
                 let html = '';
                 let jamiSelected = 0, countSelected = 0, jamiAll = 0, countAll = 0;
 
-                for (let mId in savat) {
-                    const it = savat[mId]; const m = mahsulotlar[mId]; if (!m) continue;
+                for (let key in savat) {
+                    const it = savat[key];
+                    const mId = it.mahsulotId || key.split('_')[0];
+                    const m = mahsulotlar[mId]; if (!m) continue;
                     const sum = (it.narx || 0) * (it.soni || 0);
                     jamiAll += sum; countAll += it.soni || 0;
-                    const isChecked = !!savatSelected[mId];
+                    const isChecked = !!savatSelected[key];
                     if (isChecked) { jamiSelected += sum; countSelected += it.soni || 0; }
 
                     const imgs = getProductImages(m);
@@ -825,7 +939,7 @@
                     html += `
                         <div class="border-2 ${isChecked ? 'cart-selected' : 'border-gray-200'} p-4 rounded-3xl bg-white shadow-sm flex flex-col md:flex-row gap-3 items-start md:items-center transition">
                             <label class="flex items-center cursor-pointer flex-shrink-0 pt-1 md:pt-0">
-                                <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleCartSelection('${mId}')" class="w-6 h-6 accent-emerald-600 cursor-pointer">
+                                <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleCartSelection('${key}')" class="w-6 h-6 accent-emerald-600 cursor-pointer">
                             </label>
                             ${rasm}
                             <div class="flex-1 space-y-1">
@@ -836,10 +950,10 @@
                                 <p class="text-xs text-gray-600">Jami: <b>${sum.toLocaleString()} so'm</b></p>
                             </div>
                             <div class="flex items-center gap-2">
-                                <button onclick="changeCartQty('${mId}',-1)" class="bg-gray-100 text-gray-700 w-9 h-9 rounded-full font-bold hover:bg-gray-200">−</button>
+                                <button onclick="changeCartQty('${key}',-1)" class="bg-gray-100 text-gray-700 w-9 h-9 rounded-full font-bold hover:bg-gray-200">−</button>
                                 <span class="w-8 text-center font-bold">${it.soni}</span>
-                                <button onclick="changeCartQty('${mId}',1)" class="bg-gray-100 text-gray-700 w-9 h-9 rounded-full font-bold hover:bg-gray-200">+</button>
-                                <button onclick="removeFromCart('${mId}')" class="bg-red-50 text-red-600 px-3 py-2 rounded-2xl font-bold text-xs hover:bg-red-100 ml-2"><i class="fa-regular fa-trash"></i></button>
+                                <button onclick="changeCartQty('${key}',1)" class="bg-gray-100 text-gray-700 w-9 h-9 rounded-full font-bold hover:bg-gray-200">+</button>
+                                <button onclick="removeFromCart('${key}')" class="bg-red-50 text-red-600 px-3 py-2 rounded-2xl font-bold text-xs hover:bg-red-100 ml-2"><i class="fa-regular fa-trash"></i></button>
                             </div>
                         </div>
                     `;
@@ -863,7 +977,7 @@
             draw();
 
             document.getElementById('selectAllCartBtn').addEventListener('click', () => {
-                for (let mId in savat) savatSelected[mId] = true;
+                for (let key in savat) savatSelected[key] = true;
                 saveSavatSelected(); renderSavat(container);
             });
             document.getElementById('unselectAllCartBtn').addEventListener('click', () => {
@@ -871,26 +985,29 @@
             });
         }
 
-        window.toggleCartSelection = function(mId) {
-            if (savatSelected[mId]) delete savatSelected[mId];
-            else savatSelected[mId] = true;
+        window.toggleCartSelection = function(key) {
+            if (savatSelected[key]) delete savatSelected[key];
+            else savatSelected[key] = true;
             saveSavatSelected();
             renderSavat(document.getElementById('tabContent'));
         };
 
-        window.changeCartQty = async function(mId, delta) {
+        window.changeCartQty = async function(key, delta) {
+            if (!savat[key]) return;
+            const it = savat[key];
             const mahsulotlar = await getMahsulotlarCached();
-            const m = mahsulotlar[mId]; if (!m || !savat[mId]) return;
+            const mId = it.mahsulotId || key.split('_')[0];
+            const m = mahsulotlar[mId]; if (!m) return;
             const maxSoni = parseInt(m.soni) || 0;
-            const newSoni = (savat[mId].soni || 0) + delta;
-            if (newSoni <= 0) { delete savat[mId]; delete savatSelected[mId]; }
+            const newSoni = (it.soni || 0) + delta;
+            if (newSoni <= 0) { delete savat[key]; delete savatSelected[key]; }
             else if (newSoni > maxSoni) { alert("Omborda yetarli emas!"); return; }
-            else { savat[mId].soni = newSoni; }
+            else { it.soni = newSoni; }
             saveSavat(); saveSavatSelected(); renderSavat(document.getElementById('tabContent'));
         };
-        window.removeFromCart = function(mId) {
-            delete savat[mId];
-            delete savatSelected[mId];
+        window.removeFromCart = function(key) {
+            delete savat[key];
+            delete savatSelected[key];
             saveSavat(); saveSavatSelected();
             renderSavat(document.getElementById('tabContent'));
         };
@@ -898,8 +1015,8 @@
         // ============= CHECKOUT =============
         window.openCheckoutModal = async function() {
             const user = await getCurrentUser(); if (!user) return;
-            const selectedIds = Object.keys(savatSelected).filter(id => savat[id]);
-            if (!selectedIds.length) { alert("Avval mahsulotlarni belgilang! ☑️"); return; }
+            const selectedKeys = Object.keys(savatSelected).filter(k => savat[k]);
+            if (!selectedKeys.length) { alert("Avval mahsulotlarni belgilang! ☑️"); return; }
             const mahsulotlar = await getMahsulotlarCached();
             const maydonlar = await getBuyurtmaMaydonlar(true);
             const modal = document.getElementById('modalContainer');
@@ -929,8 +1046,10 @@
                 }
             }
             let itemsHtml = ''; let jami = 0;
-            for (let mId of selectedIds) {
-                const it = savat[mId]; const m = mahsulotlar[mId]; if (!m) continue;
+            for (let key of selectedKeys) {
+                const it = savat[key];
+                const mId = it.mahsulotId || key.split('_')[0];
+                const m = mahsulotlar[mId]; if (!m) continue;
                 const sum = it.narx * it.soni; jami += sum;
                 const variantText = it.variantlar ? ` <span class="text-xs text-purple-500">(${it.variantlar})</span>` : '';
                 itemsHtml += `<div class="flex justify-between items-center border-b py-2 text-sm"><span>${m.nomi}${variantText} <b>×${it.soni}</b></span><span class="font-bold">${sum.toLocaleString()} so'm</span></div>`;
@@ -940,7 +1059,7 @@
                     <div class="bg-white p-6 md:p-8 rounded-3xl shadow-2xl w-full max-w-lg space-y-4 max-h-[90vh] overflow-y-auto border border-purple-100">
                         <div class="flex justify-between items-center border-b pb-3"><h3 class="text-2xl font-bold text-gray-800">Buyurtma berish</h3><button onclick="closeModal()" class="text-gray-400 hover:text-gray-700 text-2xl font-bold px-2">&times;</button></div>
                         <div class="bg-purple-50/50 p-4 rounded-2xl border border-purple-100">
-                            <h4 class="font-bold text-xs uppercase text-purple-700 mb-2">Tanlangan mahsulotlar (${selectedIds.length})</h4>
+                            <h4 class="font-bold text-xs uppercase text-purple-700 mb-2">Tanlangan mahsulotlar (${selectedKeys.length})</h4>
                             ${itemsHtml}
                             <div class="flex justify-between items-center pt-3 mt-2 border-t-2 border-purple-200"><span class="font-bold">Umumiy:</span><span class="font-extrabold text-purple-700 text-lg">${jami.toLocaleString()} so'm</span></div>
                         </div>
@@ -949,16 +1068,18 @@
                     </div>
                 </div>
             `;
-            document.getElementById('confirmCheckoutBtn').addEventListener('click', () => submitCheckout(selectedIds));
+            document.getElementById('confirmCheckoutBtn').addEventListener('click', () => submitCheckout(selectedKeys));
         };
 
-        async function submitCheckout(selectedIds) {
+        async function submitCheckout(selectedKeys) {
             const user = await getCurrentUser(); if (!user) return;
-            if (!selectedIds || !selectedIds.length) { alert("Mahsulot tanlanmagan!"); return; }
+            if (!selectedKeys || !selectedKeys.length) { alert("Mahsulot tanlanmagan!"); return; }
             const mahsulotlar = await getMahsulotlarCached(true);
-            for (let mId of selectedIds) {
+            for (let key of selectedKeys) {
+                const it = savat[key];
+                const mId = it.mahsulotId || key.split('_')[0];
                 const m = mahsulotlar[mId]; if (!m) { alert(`Mahsulot o'chirilgan: ${mId}`); return; }
-                if ((parseInt(m.soni) || 0) < savat[mId].soni) { alert(`Omborda yetarli emas: ${m.nomi}`); return; }
+                if ((parseInt(m.soni) || 0) < it.soni) { alert(`Omborda yetarli emas: ${m.nomi}`); return; }
             }
             const inputs = document.querySelectorAll('.co-field');
             let data = {}; let tel = '', manzil = '', izoh = '';
@@ -980,10 +1101,22 @@
             const shtrixKod = 'UZ' + Date.now().toString().slice(-8) + Math.floor(10 + Math.random()*90);
 
             let items = []; let jami = 0; let birinchiRasm = '';
-            for (let mId of selectedIds) {
-                const it = savat[mId]; const m = mahsulotlar[mId];
+            for (let key of selectedKeys) {
+                const it = savat[key];
+                const mId = it.mahsulotId || key.split('_')[0];
+                const m = mahsulotlar[mId];
                 const imgs = getProductImages(m);
-                items.push({ mahsulotId: mId, mahsulotNomi: m.nomi, mahsulotRasm: imgs[0] || '', soni: it.soni, narx: it.narx, jami: it.narx * it.soni, turi: m.turi || 'oddiy', variantlar: it.variantlar || '' });
+                items.push({ 
+                    mahsulotId: mId, 
+                    mahsulotNomi: m.nomi, 
+                    mahsulotRasm: imgs[0] || '', 
+                    soni: it.soni, 
+                    narx: it.narx, 
+                    jami: it.narx * it.soni, 
+                    turi: m.turi || 'oddiy', 
+                    variantlar: it.variantlar || '',
+                    tanlanganVariantlar: it.tanlanganVariantlar || {}
+                });
                 jami += it.narx * it.soni;
                 if (!birinchiRasm && imgs[0]) birinchiRasm = imgs[0];
                 await update(ref(db, `mahsulotlar/${mId}`), { soni: (parseInt(m.soni) || 0) - it.soni });
@@ -1002,7 +1135,7 @@
             await set(ref(db, `buyurtmalar/${raqam}`), yeni);
             CACHE.buyurtmalar = null; CACHE.mahsulotlar = null;
 
-            for (let mId of selectedIds) { delete savat[mId]; delete savatSelected[mId]; }
+            for (let key of selectedKeys) { delete savat[key]; delete savatSelected[key]; }
             saveSavat(); saveSavatSelected(); closeModal();
             renderBuyurtmaTabrik(document.getElementById('tabContent'), yeni);
         }
@@ -1069,9 +1202,9 @@
                 }
             }
             const firstRasm = imgs[0] || '';
-            // Get selected variants
-            let selectedVars = window._fullSelectedVariants || window._selectedVariants?.[mId] || {};
+            const selectedVars = window._selectedVariants?.[mId] || {};
             let variantText = '';
+            let finalNarx = calculateMahsulotNarx(m, selectedVars);
             if (m.xususiyatlar && m.xususiyatlar.length) {
                 const parts = m.xususiyatlar.map((x, xi) => {
                     const val = selectedVars[xi];
@@ -1085,17 +1218,17 @@
                         <div class="flex justify-between items-center border-b pb-3"><h3 class="text-2xl font-bold text-gray-800">Buyurtma berish</h3><button onclick="closeModal()" class="text-gray-400 hover:text-gray-700 text-2xl font-bold px-2">&times;</button></div>
                         <div class="flex gap-4 bg-purple-50/50 p-4 rounded-2xl border border-purple-100">
                             ${firstRasm ? `<img src="${firstRasm}" class="w-24 h-24 object-contain bg-white rounded-xl border img-thumb" onclick="openImageViewer(${JSON.stringify(imgs).replace(/"/g,'&quot;')},0)">` : `<div class="w-24 h-24 bg-gray-100 rounded-xl flex items-center justify-center"><i class="fa-solid fa-image text-2xl text-gray-300"></i></div>`}
-                            <div class="flex-1"><h4 class="font-bold text-lg">${m.nomi}</h4><p class="text-xs text-gray-500">${m.tavsif || ''}</p><div class="text-purple-700 font-extrabold mt-1">${m.narx || '0'} so'm</div><p class="text-xs text-emerald-600 font-bold mt-1">Omborda: ${m.soni || 0} dona</p>${variantText ? `<p class="text-xs text-purple-600 font-bold mt-1">Tanlangan: ${variantText}</p>` : ''}</div>
+                            <div class="flex-1"><h4 class="font-bold text-lg">${m.nomi}</h4><p class="text-xs text-gray-500">${m.tavsif || ''}</p><div class="text-purple-700 font-extrabold mt-1">${finalNarx.toLocaleString()} so'm</div><p class="text-xs text-emerald-600 font-bold mt-1">Omborda: ${m.soni || 0} dona</p>${variantText ? `<p class="text-xs text-purple-600 font-bold mt-1">Tanlangan: ${variantText}</p>` : ''}</div>
                         </div>
                         <div class="space-y-3">${fieldsHtml}</div>
-                        <div class="bg-purple-50 p-3 rounded-2xl text-sm flex justify-between items-center font-bold"><span>Umumiy:</span><span id="buyurtmaJami" class="text-purple-700 text-lg">${m.narx || 0} so'm</span></div>
+                        <div class="bg-purple-50 p-3 rounded-2xl text-sm flex justify-between items-center font-bold"><span>Umumiy:</span><span id="buyurtmaJami" class="text-purple-700 text-lg">${finalNarx.toLocaleString()} so'm</span></div>
                         <div class="flex justify-end gap-3 pt-3 border-t"><button onclick="closeModal()" class="px-5 py-2.5 bg-gray-100 text-gray-700 rounded-2xl font-bold text-sm hover:bg-gray-200">Bekor</button><button id="confirmBuyurtmaBtn" class="px-6 py-2.5 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-2xl font-bold text-sm shadow hover:shadow-lg">Buyurtma berish</button></div>
                     </div>
                 </div>
             `;
             const soniInput = document.getElementById('buyurtmaSoni');
             const jamiSpan = document.getElementById('buyurtmaJami');
-            const narx = parseInt(m.narx) || 0;
+            const narx = finalNarx;
             function updateJami() { const s = parseInt(soniInput.value) || 1; jamiSpan.textContent = (narx * s).toLocaleString() + " so'm"; }
             soniInput.addEventListener('input', updateJami);
             updateJami();
@@ -1121,10 +1254,20 @@
                 const raqam = Math.floor(100000 + Math.random() * 900000).toString();
                 const kod5 = await generateKod5();
                 const shtrixKod = 'UZ' + Date.now().toString().slice(-8) + Math.floor(10 + Math.random()*90);
-                const items = [{ mahsulotId: mId, mahsulotNomi: m.nomi, mahsulotRasm: firstRasm, soni, narx, jami: narx * soni, turi: m.turi || 'oddiy', variantlar: variantText }];
+                const items = [{ 
+                    mahsulotId: mId, 
+                    mahsulotNomi: m.nomi, 
+                    mahsulotRasm: firstRasm, 
+                    soni, 
+                    narx: finalNarx, 
+                    jami: finalNarx * soni, 
+                    turi: m.turi || 'oddiy', 
+                    variantlar: variantText,
+                    tanlanganVariantlar: selectedVars
+                }];
                 const yeni = {
                     id: raqam, userId: user.id, userRole: user.role,
-                    items, jami: narx * soni, tel, manzil, izoh, qiymatlar: data,
+                    items, jami: finalNarx * soni, tel, manzil, izoh, qiymatlar: data,
                     mahsulotNomi: m.nomi, mahsulotRasm: firstRasm,
                     sana: new Date().toISOString(),
                     holat: defHolat, holatRangi: defRangi,
@@ -1573,7 +1716,7 @@
                     const soni = parseInt(m.soni) || 0;
                     let xususiyatlarInfo = '';
                     if (m.xususiyatlar && m.xususiyatlar.length) {
-                        xususiyatlarInfo = m.xususiyatlar.map(x => `<span class="text-[10px] bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-bold">${x.nomi}: ${(x.variantlar||'').split(',').length} ta</span>`).join(' ');
+                        xususiyatlarInfo = m.xususiyatlar.map(x => `<span class="text-[10px] bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-bold">${x.nomi}: ${parseVariantlar(x.variantlar).length} ta</span>`).join(' ');
                     }
                     listHtml += `
                         <div class="border p-4 rounded-2xl bg-gray-50 flex items-center gap-3">
@@ -1599,7 +1742,6 @@
                 if (el) el.innerHTML = listHtml || '<p class="text-gray-400">Yo\'q</p>';
             }
 
-            // Xususiyat qo'shish HTML generator
             function xususiyatlarHtml() {
                 return `
                     <div id="xususiyatlarContainer" class="space-y-2">
@@ -1608,6 +1750,7 @@
                             <button type="button" id="addXususiyatBtn" class="text-xs bg-indigo-100 text-indigo-700 px-3 py-1 rounded-xl font-bold hover:bg-indigo-200"><i class="fa-solid fa-plus mr-1"></i>Qo'shish</button>
                         </div>
                         <div id="xususiyatList" class="space-y-2"></div>
+                        <p class="text-[10px] text-gray-500 italic">Format: <b>Nom:Narx</b> (masalan: <b>S:100000, M:110000, L:120000</b>). Narx ixtiyoriy.</p>
                     </div>
                 `;
             }
@@ -1642,7 +1785,6 @@
                 </div>
             `;
 
-            // Xususiyat qo'shish funksiyasi
             let xususiyatIndex = 0;
             document.getElementById('addXususiyatBtn').addEventListener('click', () => {
                 xususiyatIndex++;
@@ -1651,7 +1793,7 @@
                 div.className = 'flex flex-wrap gap-2 items-center bg-white p-2 rounded-xl border border-indigo-200';
                 div.innerHTML = `
                     <input type="text" placeholder="Nom (Razmer, Rang)" class="xus-nomi border-2 border-indigo-200 px-3 py-2 rounded-xl text-sm flex-1 min-w-[120px]">
-                    <input type="text" placeholder="Variantlar (S,M,L)" class="xus-variant border-2 border-indigo-200 px-3 py-2 rounded-xl text-sm flex-1 min-w-[150px]">
+                    <input type="text" placeholder="Variantlar (S:100000, M:110000)" class="xus-variant border-2 border-indigo-200 px-3 py-2 rounded-xl text-sm flex-1 min-w-[180px]">
                     <button type="button" class="remove-xus text-red-500 hover:text-red-700 text-lg font-bold px-2">&times;</button>
                 `;
                 div.querySelector('.remove-xus').addEventListener('click', () => div.remove());
@@ -1738,13 +1880,12 @@
             const mahsulotlar = await getMahsulotlarCached(); const m = mahsulotlar[mId]; if (!m) return;
             const imgs = getProductImages(m);
             const modal = document.getElementById('modalContainer');
-            // Xususiyatlar tahrirlash HTML
             let xususiyatlarHtml = '';
             if (m.xususiyatlar && m.xususiyatlar.length) {
                 xususiyatlarHtml = m.xususiyatlar.map((x, xi) => `
                     <div class="flex flex-wrap gap-2 items-center bg-white p-2 rounded-xl border border-indigo-200 edit-xus-item">
                         <input type="text" value="${x.nomi || ''}" placeholder="Nom" class="edit-xus-nomi border-2 border-indigo-200 px-3 py-2 rounded-xl text-sm flex-1 min-w-[120px]">
-                        <input type="text" value="${x.variantlar || ''}" placeholder="Variantlar" class="edit-xus-variant border-2 border-indigo-200 px-3 py-2 rounded-xl text-sm flex-1 min-w-[150px]">
+                        <input type="text" value="${x.variantlar || ''}" placeholder="Variantlar" class="edit-xus-variant border-2 border-indigo-200 px-3 py-2 rounded-xl text-sm flex-1 min-w-[180px]">
                         <button type="button" onclick="this.parentElement.remove()" class="text-red-500 hover:text-red-700 text-lg font-bold px-2">&times;</button>
                     </div>
                 `).join('');
@@ -1773,6 +1914,7 @@
                             <label class="text-xs font-bold text-gray-700 uppercase">Xususiyatlar</label>
                             <div id="editXususiyatList" class="space-y-2 mt-2">${xususiyatlarHtml || '<p class="text-xs text-gray-400">Xususiyat yo\'q</p>'}</div>
                             <button type="button" id="editAddXususiyatBtn" class="mt-2 text-xs bg-indigo-100 text-indigo-700 px-3 py-1.5 rounded-xl font-bold hover:bg-indigo-200"><i class="fa-solid fa-plus mr-1"></i>Xususiyat qo'shish</button>
+                            <p class="text-[10px] text-gray-500 italic mt-1">Format: <b>Nom:Narx</b> (masalan: <b>S:100000, M:110000</b>)</p>
                         </div>
                         <div>
                             <label class="text-xs font-bold text-gray-700 uppercase">Mavjud rasmlar</label>
@@ -1785,21 +1927,19 @@
                     </div>
                 </div>
             `;
-            // Xususiyat qo'shish (edit)
             document.getElementById('editAddXususiyatBtn').addEventListener('click', () => {
                 const list = document.getElementById('editXususiyatList');
                 const div = document.createElement('div');
                 div.className = 'flex flex-wrap gap-2 items-center bg-white p-2 rounded-xl border border-indigo-200 edit-xus-item';
                 div.innerHTML = `
                     <input type="text" placeholder="Nom" class="edit-xus-nomi border-2 border-indigo-200 px-3 py-2 rounded-xl text-sm flex-1 min-w-[120px]">
-                    <input type="text" placeholder="Variantlar" class="edit-xus-variant border-2 border-indigo-200 px-3 py-2 rounded-xl text-sm flex-1 min-w-[150px]">
+                    <input type="text" placeholder="Variantlar (S:100000, M:110000)" class="edit-xus-variant border-2 border-indigo-200 px-3 py-2 rounded-xl text-sm flex-1 min-w-[180px]">
                     <button type="button" onclick="this.parentElement.remove()" class="text-red-500 hover:text-red-700 text-lg font-bold px-2">&times;</button>
                 `;
                 list.appendChild(div);
             });
         };
 
-        // ============ TEZKOR RASM O'CHIRISH ============
         window.removeMahsulotRasm = async function(mId, idx) {
             const m = (await getMahsulotlarCached(true))[mId];
             if (!m) return;
@@ -1819,7 +1959,6 @@
             }
         };
 
-        // ============ TEZKOR TAHRIRLASH ============
         window.saveEditedMahsulot = async function(mId) {
             const nomi = document.getElementById('editMahsulotNomi').value.trim();
             const tavsif = document.getElementById('editMahsulotTavsif').value.trim();
@@ -1841,7 +1980,6 @@
                 rasmUrls = rasmUrls.concat(yangiRasmlar);
             }
 
-            // Collect xususiyatlar
             const xusItems = document.querySelectorAll('.edit-xus-item');
             const xususiyatlar = [];
             xusItems.forEach(div => {
@@ -1871,7 +2009,6 @@
             }
         };
 
-        // ============ TEZKOR O'CHIRISH ============
         window.deleteMahsulot = async function(mId) {
             if (!confirm("O'chirilsin?")) return;
             if (CACHE.mahsulotlar) delete CACHE.mahsulotlar[mId];
@@ -2167,11 +2304,47 @@
             CACHE.buyurtmaMaydonlar = null; renderAdminBuyurtmaMaydonlar(document.getElementById('tabContent'));
         };
 
-        // ==================== ADMIN: SCAN ====================
+        // ==================== ADMIN: SCAN (YANGILANGAN) ====================
         async function renderAdminScan(container) {
+            // Parolni tekshirish
+            const savedPwd = localStorage.getItem('device_scan_password');
+            const isUnlocked = sessionStorage.getItem('scan_unlocked') === 'true';
+
+            if (!isUnlocked) {
+                container.innerHTML = `
+                    <div class="bg-white/70 backdrop-blur-sm p-6 rounded-3xl shadow-sm border border-indigo-100 space-y-6">
+                        <div><h2 class="text-2xl font-bold text-gray-800"><i class="fa-solid fa-lock text-indigo-600 mr-3"></i>Qurilma paroli</h2><p class="text-sm text-gray-500">Skaner funksiyasidan foydalanish uchun 6 xonali doimiy parolni kiriting</p></div>
+                        <div class="bg-indigo-50/60 p-6 rounded-3xl border-2 border-dashed border-indigo-200 space-y-4 max-w-md mx-auto">
+                            <div class="text-center">
+                                <div class="w-16 h-16 bg-indigo-100 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto text-2xl"><i class="fa-solid fa-shield-halved"></i></div>
+                                <p class="text-xs text-gray-500 mt-2">Ushbu qurilma uchun parol</p>
+                                <p class="text-2xl font-extrabold text-indigo-700 tracking-widest mt-1">${savedPwd}</p>
+                            </div>
+                            <input type="password" id="scanDevicePwd" maxlength="6" placeholder="Parolni kiriting" class="w-full border-2 border-indigo-200 px-4 py-3 rounded-2xl text-center text-xl tracking-widest font-bold">
+                            <button id="scanUnlockBtn" class="w-full bg-indigo-600 text-white py-3 rounded-2xl font-bold shadow hover:shadow-lg">Tasdiqlash</button>
+                            <p class="text-[10px] text-gray-400 text-center">Parol o'zgarmas, faqat shu qurilmada ishlaydi</p>
+                        </div>
+                    </div>
+                `;
+                document.getElementById('scanUnlockBtn').addEventListener('click', () => {
+                    const entered = document.getElementById('scanDevicePwd').value.trim();
+                    if (entered === savedPwd) {
+                        sessionStorage.setItem('scan_unlocked', 'true');
+                        renderAdminScan(container);
+                    } else {
+                        alert("Noto'g'ri parol!");
+                    }
+                });
+                return;
+            }
+
+            // Asosiy skaner interfeysi
             container.innerHTML = `
                 <div class="bg-white/70 backdrop-blur-sm p-6 rounded-3xl shadow-sm border border-indigo-100 space-y-6">
-                    <div><h2 class="text-2xl font-bold text-gray-800"><i class="fa-solid fa-barcode text-indigo-600 mr-3"></i>Shtrix kod / 5 xonali kod qidiruv</h2><p class="text-sm text-gray-500">Kodni kiriting yoki kamera orqali skaner qiling (buyurtma + ariza)</p></div>
+                    <div class="flex justify-between items-center">
+                        <div><h2 class="text-2xl font-bold text-gray-800"><i class="fa-solid fa-barcode text-indigo-600 mr-3"></i>Shtrix kod / 5 xonali kod qidiruv</h2><p class="text-sm text-gray-500">Kodni kiriting yoki kamera orqali skaner qiling (buyurtma + ariza)</p></div>
+                        <button id="scanLockBtn" class="bg-gray-100 text-gray-600 px-4 py-2 rounded-2xl text-xs font-bold hover:bg-gray-200"><i class="fa-solid fa-lock mr-1"></i> Qulflash</button>
+                    </div>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <div class="bg-indigo-50/60 p-4 rounded-3xl border-2 border-dashed border-indigo-200 space-y-2">
                             <h4 class="text-xs font-bold text-indigo-700 uppercase">5 xonali kod</h4>
@@ -2192,6 +2365,10 @@
                     <div id="scanResult" class="space-y-4"></div>
                 </div>
             `;
+            document.getElementById('scanLockBtn').addEventListener('click', () => {
+                sessionStorage.removeItem('scan_unlocked');
+                renderAdminScan(container);
+            });
             document.getElementById('scanKod5Btn').addEventListener('click', async () => {
                 const kod = document.getElementById('scanKod5').value.trim();
                 if (!kod) return;
